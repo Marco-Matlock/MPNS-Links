@@ -1,0 +1,119 @@
+function searchMPNSAndExtractTopLinkIndividually() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var plantNames = sheet.getRange(2, 1, sheet.getLastRow() - 1).getValues();
+  var processedSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Processed Results') 
+                        || SpreadsheetApp.getActiveSpreadsheet().insertSheet('Processed Results');
+  
+  var lastRow = processedSheet.getLastRow();
+  if (lastRow === 0) {
+    processedSheet.appendRow(['Plant Name', 'Top Link']);
+    lastRow = 1;
+  }
+
+  var baseUrl = 'https://mpns.science.kew.org/mpns-portal/searchName?searchTerm=';
+  var hybridXPattern = /\s?[x×X✕✖︎]\s?/g;
+
+  // Max execution time limit in milliseconds (5 minutes minus a buffer)
+  var executionLimit = Date.now() + (5 * 60 * 1000) - 10000; 
+
+  for (var i = plantNames.length - 1; i >= 0; i--) {
+    if (Date.now() > executionLimit) {
+      // Set trigger for continuation if execution time is near the limit
+      setContinuationTrigger();
+      return; // Exit to prevent exceeding time limit
+    }
+
+    var plantName = plantNames[i][0];
+    var topLink = ''; 
+    var highestRank = -1;
+    var foundValidLink = false;
+
+    if (plantName) {
+      var searchName = plantName;
+      var url = baseUrl + encodeURIComponent(searchName) + '&nameType=all';
+      foundValidLink = processPlantSearch(url, searchName);
+
+      if (!foundValidLink && hybridXPattern.test(plantName)) {
+        var modifiedName = plantName.replace(hybridXPattern, ' ');
+        url = baseUrl + encodeURIComponent(modifiedName) + '&nameType=all';
+        foundValidLink = processPlantSearch(url, modifiedName);
+      }
+
+      processedSheet.appendRow([plantName, topLink || (foundValidLink ? 'No valid link found' : 'No link found')]);
+      sheet.deleteRow(i + 2); 
+    }
+  }
+
+  function processPlantSearch(url, searchName) {
+    try {
+      Logger.log('Fetching URL: ' + url);
+      var response = UrlFetchApp.fetch(url, { 'muteHttpExceptions': true });
+      var html = response.getContentText();
+      Logger.log('HTML Content fetched successfully for: ' + searchName);
+
+      var tbodyMatch = html.match(/<tbody>([\s\S]*?)<\/tbody>/i);
+      
+      if (tbodyMatch) {
+        var tbodyContent = tbodyMatch[1];
+        Logger.log('Full <tbody> content: ' + tbodyContent);
+
+        var links = tbodyContent.match(/<a\s+href="([^"]*)"/gi);
+        var ranks = tbodyContent.match(/\b([0-9]|[1-9][0-9]{1,2}|1000)\b/g);
+        var variationsPattern = new RegExp(searchName + '\\s?(var\\.|subsp\\.|ssp\\.|f\\.|forma\\.|subvar\\.)', 'i');
+        
+        Logger.log('Number of links found: ' + (links ? links.length : 0));
+        Logger.log('Number of ranks found: ' + (ranks ? ranks.length : 0));
+
+        if (links && ranks) {
+          links.forEach(function(linkHtml, k) {
+            var linkMatch = linkHtml.match(/<a\s+href="([^"]*)"/i);
+            var link = linkMatch ? linkMatch[1] : '';
+            var rank = parseInt(ranks[k]);
+            if (isNaN(rank)) rank = -1;
+
+            Logger.log('Found link: ' + link);
+            Logger.log('Found rank: ' + rank);
+
+            // Check if the link matches the plant name variations
+            if (variationsPattern.test(linkHtml)) {
+              highestRank = rank + 1000; // Boost rank for exact matches with variations
+              topLink = link;
+            } else if (rank >= highestRank) {
+              highestRank = rank;
+              topLink = link;
+            }
+          });
+
+          if (topLink) {
+            topLink = 'https://mpns.science.kew.org/mpns-portal/' + topLink;
+            return true;
+          }
+        }
+      }
+    } catch (error) {
+      Logger.log('Error for plant "' + searchName + '": ' + error.message);
+    }
+    return false;
+  }
+}
+
+// Helper function to set the continuation trigger
+function setContinuationTrigger() {
+  deleteExistingTriggers('searchMPNSAndExtractTopLinkIndividually');
+  
+  // Set a new time-based trigger to continue execution in 5 minutes
+  ScriptApp.newTrigger('searchMPNSAndExtractTopLinkIndividually')
+           .timeBased()
+           .after(5 * 60 * 1000) // 5 minutes
+           .create();
+}
+
+// Helper function to delete existing triggers for a specific function
+function deleteExistingTriggers(functionName) {
+  var triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === functionName) {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
+  }
+}
