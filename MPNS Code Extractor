@@ -1,0 +1,69 @@
+function extractDataFromProcessedResults() {
+  // Start time to monitor execution duration
+  var startTime = new Date().getTime();
+
+  // Open the active spreadsheet and get the active sheet (Processed Results)
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var numRows = sheet.getLastRow() - 1;  // Total number of rows excluding header
+
+  // Retrieve the last processed row from the script properties
+  var scriptProperties = PropertiesService.getScriptProperties();
+  var lastProcessedRow = parseInt(scriptProperties.getProperty('lastProcessedRow')) || numRows + 1;
+
+  // Create or get a new sheet for storing extracted results
+  var extractedSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Extracted Results') 
+                       || SpreadsheetApp.getActiveSpreadsheet().insertSheet('Extracted Results');
+
+  // Set headers in the 'Extracted Results' sheet if it is empty
+  if (extractedSheet.getLastRow() === 0) {
+    extractedSheet.appendRow(['Plant Name', 'DBS-PlantID']);
+  }
+
+  // Get the next available row in the 'Extracted Results' sheet
+  var nextRow = extractedSheet.getLastRow() + 1;
+
+  // Process the data from bottom to top, starting from the last processed row
+  for (var i = lastProcessedRow - 2; i >= 0; i--) {
+    var plantName = sheet.getRange(i + 2, 1).getValue();  // Plant name from column 1
+    var url = sheet.getRange(i + 2, 2).getValue();        // URL from column 2
+    var result = '';
+
+    if (url && url.includes('plantDetail')) {
+      // Extract the dbs and plantId values from the URL
+      var dbsMatch = url.match(/dbs=([^&]+)/);
+      var plantIdMatch = url.match(/plantId=([^&]+)/);
+
+      if (dbsMatch && plantIdMatch) {
+        var dbs = dbsMatch[1].toUpperCase();  // Convert to uppercase (e.g., WCS)
+        var plantId = plantIdMatch[1];
+        result = dbs + '-' + plantId;  // Combine the values
+      } else {
+        Logger.log('Invalid URL format for plant: ' + plantName);
+      }
+    }
+
+    // Append the plant name and extracted data to the 'Extracted Results' sheet
+    extractedSheet.getRange(nextRow, 1, 1, 2).setValues([[plantName, result]]);
+    
+    // Move to the next available row
+    nextRow++;
+
+    // Update the last processed row in the script properties every 50 rows
+    if (i % 50 === 0) {
+      scriptProperties.setProperty('lastProcessedRow', i + 2);
+      // Allow time to save the state in case of timeouts
+      Utilities.sleep(500);
+    }
+
+    // Check execution time and break if running out of time
+    if ((new Date().getTime() - startTime) > 270000) {  // Stop at around 4.5 minutes
+      Logger.log('Stopping script to avoid time limit, last processed row: ' + (i + 2));
+      scriptProperties.setProperty('lastProcessedRow', i + 2);
+      return;
+    }
+  }
+
+  // If all rows are processed, reset the last processed row to start from the end in the next run
+  scriptProperties.deleteProperty('lastProcessedRow');
+  Logger.log('Data extraction completed.');
+}
